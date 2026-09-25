@@ -127,32 +127,29 @@ def move(body: MoveRequest, db: Session = Depends(get_db)):
     if any(p.rail_id == target.id for p in current):
         raise HTTPException(400, "工单已在目标挂杆上")
 
-    # 先在目标杆按现网 First-Fit 试算；放得下才在单事务内释放原占位并写入新占位，
-    # 放不下则直接失败，原 active 占位保持不变。提交前不产生任何中间状态。
-    from app.services.move_commit import clear_source_before_fit, commit_target_when_fit_fails, keep_source_active_after_success
-    if clear_source_before_fit():
-        for p in current:
-            p.active = 0
-        db.flush()
+    # 先按目标杆当前 active 占位做 First-Fit 试算，在此之前不写入任何改动：
+    # 放不下则整单失败，原占位保持不变。
     target_active = db.scalars(
         select(RailPlacement).where(RailPlacement.rail_id == target.id, RailPlacement.active == 1)
     ).all()
     occupied = [Segment(p.start_cm, p.end_cm) for p in target_active]
     place = first_fit(target.length_cm, occupied, order.length_cm)
+    if place is None:
+        raise HTTPException(409, "目标挂杆空间不足")
+
+    # 仅当试算成功，才在单事务内释放原 active 占位并写入目标杆新占位；
+    # 提交失败整体回滚，不会出现双杆同时 active 或原占位丢失。
+    for p in current:
+        p.active = 0
     db.add(
         RailPlacement(
             rail_id=target.id,
             order_id=order.id,
-            start_cm=(place.start_cm if place else 0),
-            end_cm=(place.end_cm if place else order.length_cm),
+            start_cm=place.start_cm,
+            end_cm=place.end_cm,
             active=1,
         )
     )
-    if place is None:
-        db.commit()
-        raise HTTPException(409, "目标挂杆空间不足")
-    for p in current:
-        p.active = 1
     db.commit()
     db.refresh(order)
     return order

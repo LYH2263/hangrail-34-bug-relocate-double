@@ -13,11 +13,3 @@ export function ticketsOnBoth(maps: { rail_id: number; segments: { ticket_code: 
   }
   return both;
 }
-
-export function failureClearsSource(): boolean {
-  return true;
-}
-
-export function successKeepsSource(): boolean {
-  return true;
-}
